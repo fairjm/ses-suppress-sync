@@ -3,7 +3,13 @@ import {
   ListSuppressedDestinationsCommand,
 } from "@aws-sdk/client-sesv2";
 import { config } from "./config";
-import { getNextToken, updateNextToken, syncDestinations } from "./database";
+import {
+  syncDestinations,
+  getOrCreateTaskToRun,
+  updateTaskToken,
+  completeTask,
+  failTask,
+} from "./database";
 
 const sesClient = new SESv2Client({
   region: config.aws.region,
@@ -19,15 +25,19 @@ async function sleep(ms: number): Promise<void> {
 
 async function runSyncCycle() {
   console.log("Starting new sync cycle...");
+  let task;
   try {
-    const nextToken = await getNextToken();
+    task = await getOrCreateTaskToRun();
     console.log(
-      `Found token: ${nextToken ? nextToken.substring(0, 10) + "..." : "null"}`
+      `Running task ${task.id}, start_date: ${task.start_date}, next_token: ${
+        task.next_token?.substring(0, 10) ?? "null"
+      }...`
     );
 
     const command = new ListSuppressedDestinationsCommand({
       PageSize: config.sync.pageSize,
-      NextToken: nextToken ?? undefined,
+      NextToken: task.next_token ?? undefined,
+      StartDate: task.start_date ?? undefined,
     });
 
     const response = await sesClient.send(command);
@@ -38,24 +48,31 @@ async function runSyncCycle() {
         `Found ${destinations.length} suppressed destinations. Syncing to DB...`
       );
       await syncDestinations(destinations);
-      await updateNextToken(response.NextToken || null);
+    }
+
+    if (response.NextToken) {
+      await updateTaskToken(task.id, response.NextToken);
       console.log(
-        `Sync complete. Next token updated. Sleeping for ${
+        `Sync page complete. Next token updated. Sleeping for ${
           config.sync.loopInterval / 1000
         }s.`
       );
       await sleep(config.sync.loopInterval);
     } else {
+      // Sync for this task is complete
+      await completeTask(task.id);
       console.log(
-        `No suppressed destinations found. Resetting token and sleeping for ${
+        `Sync task ${task.id} complete. Sleeping for ${
           config.sync.emptyInterval / 1000
         }s.`
       );
-      await updateNextToken(null); // Reset token to start from the beginning next time
       await sleep(config.sync.emptyInterval);
     }
   } catch (error) {
     console.error("An error occurred during the sync cycle:", error);
+    if (task) {
+      await failTask(task.id);
+    }
     console.log(
       `Error occurred. Sleeping for ${
         config.sync.emptyInterval / 1000

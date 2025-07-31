@@ -58,19 +58,21 @@ CREATE TABLE `suppressed_destinations` (
   `created` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `last_modified` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
-  UNIQUE KEY `email` (`email`)
+  UNIQUE KEY `uk_email_status` (`email`, `reason`)
 );
 
-CREATE TABLE `sync_state` (
-  `key` varchar(50) NOT NULL,
-  `value` text,
-  `created` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `last_modified` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (`key`)
+CREATE TABLE `poll_task`
+(
+    `id`            BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `status`        VARCHAR(20) NOT NULL,
+    `start_date`    DATETIME,
+    `next_token`    TEXT,
+    `created`       DATETIME DEFAULT CURRENT_TIMESTAMP,
+    `last_modified` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 ```
 
-_Note: A `UNIQUE KEY` on the `email` column has been added to `suppressed_destinations` to prevent duplicate entries.Remove it if you want to see all records from the same email address._
+poll_task serves as a synchronous task status management. Initially, it performs a full fetch, and subsequently, it fetches data using the start time of the last completed task (overriding the fetch interval). If you need to perform a full fetch again, simply clear this table.
 
 ## How to Run
 

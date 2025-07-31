@@ -11,23 +11,79 @@ function getPool() {
   return pool;
 }
 
-export async function getNextToken(): Promise<string | null> {
-  const pool = getPool();
-  const [rows] = await pool.query<mysql.RowDataPacket[]>(
-    "SELECT `value` FROM `sync_state` WHERE `key` = 'ses_next_token'"
-  );
-  if (rows.length > 0) {
-    return rows[0].value;
-  }
-  return null;
+export const TASK_STATUS = {
+  RUNNING: "running",
+  COMPLETED: "completed",
+  FAILED: "failed",
+};
+
+export interface PollTask {
+  id: number;
+  status: string;
+  start_date: Date | null;
+  next_token: string | null;
 }
 
-export async function updateNextToken(token: string | null): Promise<void> {
+export async function getOrCreateTaskToRun(): Promise<PollTask> {
   const pool = getPool();
-  await pool.query(
-    "INSERT INTO `sync_state` (`key`, `value`) VALUES ('ses_next_token', ?) ON DUPLICATE KEY UPDATE `value` = ?",
-    [token, token]
+  const [runningTasks] = await pool.query<mysql.RowDataPacket[]>(
+    "SELECT * FROM `poll_task` WHERE `status` = ? ORDER BY id desc LIMIT 1",
+    [TASK_STATUS.RUNNING]
   );
+
+  if (runningTasks.length > 0) {
+    return runningTasks[0] as PollTask;
+  }
+
+  const [lastCompletedTasks] = await pool.query<mysql.RowDataPacket[]>(
+    "SELECT * FROM `poll_task` WHERE `status` = ? ORDER BY `id` DESC LIMIT 1",
+    [TASK_STATUS.COMPLETED]
+  );
+
+  const startDate =
+    lastCompletedTasks.length > 0
+      ? // Start from the last completed task's created date
+        new Date(lastCompletedTasks[0].created)
+      : null;
+
+  const [result] = await pool.query<mysql.ResultSetHeader>(
+    "INSERT INTO `poll_task` (`status`, `start_date`) VALUES (?, ?)",
+    [TASK_STATUS.RUNNING, startDate]
+  );
+
+  const [newTasks] = await pool.query<mysql.RowDataPacket[]>(
+    "SELECT * FROM `poll_task` WHERE `id` = ?",
+    [result.insertId]
+  );
+
+  return newTasks[0] as PollTask;
+}
+
+export async function updateTaskToken(
+  id: number,
+  token: string | null
+): Promise<void> {
+  const pool = getPool();
+  await pool.query("UPDATE `poll_task` SET `next_token` = ? WHERE `id` = ?", [
+    token,
+    id,
+  ]);
+}
+
+export async function completeTask(id: number): Promise<void> {
+  const pool = getPool();
+  await pool.query("UPDATE `poll_task` SET `status` = ? WHERE `id` = ?", [
+    TASK_STATUS.COMPLETED,
+    id,
+  ]);
+}
+
+export async function failTask(id: number): Promise<void> {
+  const pool = getPool();
+  await pool.query("UPDATE `poll_task` SET `status` = ? WHERE `id` = ?", [
+    TASK_STATUS.FAILED,
+    id,
+  ]);
 }
 
 export async function syncDestinations(
